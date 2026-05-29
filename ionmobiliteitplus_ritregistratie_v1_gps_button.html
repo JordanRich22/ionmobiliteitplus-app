@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>IonMobiliteitPlus - Ritregistratie</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; background: #f4f6f8; color: #1f2937; }
+    header { background: #1e64c8; color: white; padding: 18px; text-align: center; font-size: 22px; font-weight: bold; }
+    .container { max-width: 760px; margin: 0 auto; padding: 18px; }
+    .card { background: white; border-radius: 14px; padding: 18px; margin-bottom: 16px; box-shadow: 0 2px 10px rgba(0,0,0,0.08); }
+    button { width: 100%; padding: 16px; border: 0; border-radius: 12px; font-size: 18px; font-weight: bold; margin: 8px 0; cursor: pointer; }
+    .gps { background: #7c3aed; color: white; }
+    .start { background: #16a34a; color: white; }
+    .stop { background: #dc2626; color: white; }
+    .pdf { background: #1e64c8; color: white; }
+    .secondary { background: #e5e7eb; color: #111827; }
+    input { width: 100%; padding: 14px; border-radius: 10px; border: 1px solid #d1d5db; font-size: 18px; box-sizing: border-box; margin-top: 6px; }
+    label { font-weight: bold; display: block; margin-top: 12px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { border-bottom: 1px solid #e5e7eb; padding: 8px; text-align: left; }
+    th { background: #f9fafb; }
+    .status { font-size: 15px; padding: 10px; border-radius: 10px; background: #eef2ff; margin-top: 10px; line-height: 1.45; }
+    .warning { background: #fff7ed; color: #9a3412; }
+  </style>
+</head>
+<body>
+<header>IonMobiliteitPlus Ritregistratie</header>
+
+<div class="container">
+  <div class="card">
+    <h2>GPS</h2>
+    <button class="gps" onclick="activateGPS()">ACTIVEER GPS / TOESTAAN</button>
+    <div id="gpsStatus" class="status warning">GPS nog niet actief. Druk eerst op ACTIVEER GPS.</div>
+  </div>
+
+  <div class="card">
+    <h2>Nieuwe rit</h2>
+    <button class="start" onclick="startRit()">START RIT</button>
+    <button class="stop" onclick="stopRit()">STOP RIT</button>
+
+    <div id="status" class="status">Nog geen actieve rit.</div>
+
+    <label>Bedrag betaald (€)</label>
+    <input id="bedrag" type="number" step="0.01" placeholder="Bijv. 25.00" />
+
+    <button class="pdf" onclick="saveRit()">RIT OPSLAAN + VERVOERSBEWIJS MAKEN</button>
+  </div>
+
+  <div class="card">
+    <h2>Dienststaat / ritten</h2>
+    <button class="secondary" onclick="exportCSV()">Export CSV</button>
+    <button class="secondary" onclick="clearAll()">Alles wissen</button>
+    <div style="overflow-x:auto;">
+      <table>
+        <thead>
+          <tr><th>Datum</th><th>Start</th><th>Stop</th><th>Bedrag</th><th>PDF</th></tr>
+        </thead>
+        <tbody id="rittenTable"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+const COMPANY = {
+  name: "IONMOBILITEITPLUS",
+  phone: "0471 82 42 12",
+  email: "Ionmobiliteitplus@yahoo.com",
+  kbo: "1032944189",
+  btw: "BE1032944189",
+  vergunning: "0018956",
+  driver: "Ion Duca",
+  bestuurderspas: "40119",
+  plate: "TXAU983",
+  address: "Gitsestraat 555, 8800 Roeselare"
+};
+
+let currentRide = JSON.parse(localStorage.getItem("currentRide") || "null");
+let lastGPS = JSON.parse(localStorage.getItem("lastGPS") || "null");
+let watchId = null;
+
+function pad(n){ return String(n).padStart(2, "0"); }
+function fmtDate(d){ return `${pad(d.getDate())}-${pad(d.getMonth()+1)}-${d.getFullYear()}`; }
+function fmtTime(d){ return `${pad(d.getHours())}:${pad(d.getMinutes())}`; }
+function fmtDateTime(d){ return `${fmtDate(d)} ${fmtTime(d)}`; }
+function rideNumber(){
+  const chars = Math.random().toString(36).substring(2,8).toUpperCase();
+  const now = new Date();
+  return `RIT-IMP-${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}-${chars}`;
+}
+
+function updateGPSStatus(message, ok=false){
+  const el = document.getElementById("gpsStatus");
+  el.className = ok ? "status" : "status warning";
+  if (lastGPS) {
+    el.innerHTML = `${message}<br><b>Laatste GPS:</b> ${lastGPS.lat} - ${lastGPS.lng}<br><b>Nauwkeurigheid:</b> ±${Math.round(lastGPS.accuracy)} m`;
+  } else {
+    el.innerHTML = message;
+  }
+}
+
+function activateGPS(){
+  if (!navigator.geolocation) {
+    updateGPSStatus("GPS wordt niet ondersteund door deze browser.");
+    return;
+  }
+
+  navigator.geolocation.getCurrentPosition(
+    pos => {
+      lastGPS = {
+        lat: pos.coords.latitude.toFixed(5),
+        lng: pos.coords.longitude.toFixed(5),
+        accuracy: pos.coords.accuracy,
+        time: new Date().toISOString()
+      };
+      localStorage.setItem("lastGPS", JSON.stringify(lastGPS));
+      updateGPSStatus("GPS actief en toestemming gegeven.", true);
+
+      if (watchId === null) {
+        watchId = navigator.geolocation.watchPosition(
+          p => {
+            lastGPS = {
+              lat: p.coords.latitude.toFixed(5),
+              lng: p.coords.longitude.toFixed(5),
+              accuracy: p.coords.accuracy,
+              time: new Date().toISOString()
+            };
+            localStorage.setItem("lastGPS", JSON.stringify(lastGPS));
+            updateGPSStatus("GPS actief.", true);
+          },
+          e => updateGPSStatus("GPS fout: " + e.message),
+          { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+        );
+      }
+    },
+    err => {
+      updateGPSStatus("Geen GPS-toegang: " + err.message + ". Controleer browser-permissies en locatie-instellingen.");
+    },
+    { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+  );
+}
+
+function getLocation() {
+  return new Promise((resolve, reject) => {
+    if (lastGPS) {
+      resolve(lastGPS);
+      return;
+    }
+    if (!navigator.geolocation) {
+      reject("GPS wordt niet ondersteund.");
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      pos => resolve({
+        lat: pos.coords.latitude.toFixed(5),
+        lng: pos.coords.longitude.toFixed(5),
+        accuracy: pos.coords.accuracy
+      }),
+      err => reject("Geen GPS-toegang: " + err.message),
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+    );
+  });
+}
+
+async function startRit(){
+  try {
+    const gps = await getLocation();
+    const now = new Date();
+    currentRide = {
+      ritnummer: rideNumber(),
+      startISO: now.toISOString(),
+      startDate: fmtDate(now),
+      startTime: fmtDateTime(now),
+      startGPS: gps,
+      stopISO: null,
+      stopTime: null,
+      stopGPS: null
+    };
+    localStorage.setItem("currentRide", JSON.stringify(currentRide));
+    updateStatus();
+  } catch(e) { alert(e); }
+}
+
+async function stopRit(){
+  if (!currentRide) { alert("Er is geen actieve rit."); return; }
+  try {
+    const gps = await getLocation();
+    const now = new Date();
+    currentRide.stopISO = now.toISOString();
+    currentRide.stopTime = fmtDateTime(now);
+    currentRide.stopGPS = gps;
+    localStorage.setItem("currentRide", JSON.stringify(currentRide));
+    updateStatus();
+  } catch(e) { alert(e); }
+}
+
+function saveRit(){
+  if (!currentRide || !currentRide.stopISO) { alert("Start en stop eerst de rit."); return; }
+  const bedrag = document.getElementById("bedrag").value;
+  if (!bedrag) { alert("Vul eerst het bedrag in."); return; }
+
+  currentRide.bedrag = Number(bedrag).toFixed(2);
+  const rides = JSON.parse(localStorage.getItem("rides") || "[]");
+  rides.push(currentRide);
+  localStorage.setItem("rides", JSON.stringify(rides));
+  localStorage.removeItem("currentRide");
+  currentRide = null;
+  document.getElementById("bedrag").value = "";
+  renderRides();
+  updateStatus();
+  makePDF(rides.length - 1);
+}
+
+function updateStatus(){
+  const el = document.getElementById("status");
+  if (!currentRide) {
+    el.innerHTML = "Nog geen actieve rit.";
+    return;
+  }
+  el.innerHTML = `
+    <b>Actieve rit:</b><br>
+    Ritnummer: ${currentRide.ritnummer}<br>
+    Start: ${currentRide.startTime}<br>
+    Start GPS: ${currentRide.startGPS.lat} - ${currentRide.startGPS.lng}<br>
+    ${currentRide.stopTime ? `Stop: ${currentRide.stopTime}<br>Stop GPS: ${currentRide.stopGPS.lat} - ${currentRide.stopGPS.lng}` : "Nog niet gestopt."}
+  `;
+}
+
+function renderRides(){
+  const rides = JSON.parse(localStorage.getItem("rides") || "[]");
+  const tbody = document.getElementById("rittenTable");
+  tbody.innerHTML = "";
+  rides.forEach((r, i) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${r.startDate}</td><td>${r.startTime}</td><td>${r.stopTime}</td><td>€ ${r.bedrag}</td><td><button class="secondary" onclick="makePDF(${i})">PDF</button></td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+function makePDF(index){
+  const rides = JSON.parse(localStorage.getItem("rides") || "[]");
+  const r = rides[index];
+  if (!r) return;
+
+  const w = window.open("", "_blank");
+  w.document.write(`
+<html><head><title>Vervoersbewijs ${r.ritnummer}</title>
+<style>
+body { font-family: Arial, sans-serif; margin: 55px; color: #1f2937; }
+.top { display: flex; justify-content: space-between; border-bottom: 2px solid #e5e7eb; padding-bottom: 18px; }
+h1 { margin: 0; font-size: 26px; } h2 { color: #1e64c8; margin: 0; font-size: 26px; }
+.right { text-align: right; color: #6b7280; line-height: 1.45; }
+.info { margin-top: 28px; display: grid; grid-template-columns: 210px 1fr; row-gap: 14px; }
+.label { font-weight: bold; } .section { margin-top: 26px; }
+.blue { color: #1e64c8; font-weight: bold; font-size: 20px; margin-bottom: 5px; }
+.thanks { margin-top: 40px; color: #6b7280; }
+.footer { position: fixed; bottom: 30px; left: 0; right: 0; text-align: center; color: #6b7280; font-size: 13px; }
+</style></head>
+<body>
+<div class="top"><div><h1>${COMPANY.name}</h1><p>Telefoon: ${COMPANY.phone}</p></div>
+<div class="right"><h2>VERVOERSBEWIJS</h2>KBO: ${COMPANY.kbo}<br>BTW: ${COMPANY.btw}<br>Vergunning: ${COMPANY.vergunning}<br>E-mail: ${COMPANY.email}</div></div>
+<div class="info">
+<div class="label">Instaptijd:</div><div>${r.startTime}</div>
+<div class="label">Datum:</div><div>${r.startDate}</div>
+<div class="label">Uitstaptijd:</div><div>${r.stopTime}</div>
+<div class="label">Kenteken:</div><div>${COMPANY.plate}</div>
+<div class="label">Ritnummer:</div><div>${r.ritnummer}</div>
+<div class="label">Bestuurder:</div><div>${COMPANY.driver}</div>
+<div class="label">Bestuurderspas:</div><div>${COMPANY.bestuurderspas}</div>
+<div class="label">Betaald bedrag:</div><div>€ ${r.bedrag}</div>
+<div class="label">Dienst:</div><div>IonMobiliteitPlus</div>
+</div>
+<div class="section"><div class="blue">Ophaaladres:</div>Lat / Lng: ${r.startGPS.lat} - ${r.startGPS.lng}</div>
+<div class="section"><div class="blue">Bestemming:</div>Lat / Lng: ${r.stopGPS.lat} - ${r.stopGPS.lng}</div>
+<p class="thanks">Wij danken u voor het vertrouwen en zien u graag nog eens terug.</p>
+<div class="footer">IonMobiliteitPlus Ritregistratie &nbsp;&nbsp; ${fmtDateTime(new Date())}</div>
+<script>window.print();<\/script>
+</body></html>`);
+  w.document.close();
+}
+
+function exportCSV(){
+  const rides = JSON.parse(localStorage.getItem("rides") || "[]");
+  let csv = "Datum;Start;Stop;Ritnummer;StartLat;StartLng;StopLat;StopLng;Bedrag\n";
+  rides.forEach(r => csv += `${r.startDate};${r.startTime};${r.stopTime};${r.ritnummer};${r.startGPS.lat};${r.startGPS.lng};${r.stopGPS.lat};${r.stopGPS.lng};${r.bedrag}\n`);
+  const blob = new Blob([csv], {type: "text/csv"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = "dienststaat-ionmobiliteitplus.csv"; a.click();
+  URL.revokeObjectURL(url);
+}
+
+function clearAll(){
+  if (confirm("Alle ritten wissen?")) {
+    localStorage.removeItem("rides");
+    localStorage.removeItem("currentRide");
+    currentRide = null;
+    renderRides();
+    updateStatus();
+  }
+}
+
+renderRides();
+updateStatus();
+if (lastGPS) updateGPSStatus("GPS locatie gevonden uit geheugen.", true);
+</script>
+</body>
+</html>
